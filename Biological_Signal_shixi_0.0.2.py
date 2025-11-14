@@ -295,16 +295,18 @@ class MainWindow(QMainWindow):
         self.is_recording = False  # 是否正式记录数据
         self.initialized = False  # 是否已完成初始化
 
-        # # marker存储列表
+         # marker存储列表
         # self.markers = []  # 存储格式: [(marker_name, elapsed_time), ...]
         # self.current_cycle_markers = []  # 当前循环的marker存储
         # self.current_phase = 1  # 当前实验阶段：1或2
         # self.video_count = 0  # 视频计数器
 
         # 新增：实验人数设置（1或2）
-        # self.subject_count = 1  # 默认1人
+        self.subject_count = 1  # 默认1人
 
         self.Heart_rate = 0  # 心率属性
+        self.current_phase = 1
+        self.current_cycle_markers = []
 
         # 实验信号采集设置
         self.ecg_channel = False  # ECG通道
@@ -333,6 +335,13 @@ class MainWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_plot)
         self.timer.start(self.update_interval)
+
+        # 心率定时器：滑动窗口 8s，更新频率 0.5s
+        self.hr_window_s = 8.0
+        self.hr_update_interval_ms = 500  # 0.5s
+        self.hr_timer = QTimer(self)
+        self.hr_timer.timeout.connect(self._hr_update)
+        self.hr_timer.start(self.hr_update_interval_ms)
 
         
 
@@ -465,7 +474,6 @@ class MainWindow(QMainWindow):
         # 更新图表标题
         self.ecg_plot.setTitle(f'ECG信号 (正式采集模式 - 第{self.current_phase}阶段)')
         self.emg_plot.setTitle(f'EMG信号 (正式采集模式 - 第{self.current_phase}阶段)')
-        self.gsr_plot.setTitle(f'GSR信号 (正式采集模式 - 第{self.current_phase}阶段)')
 
         self.log_message(f"{self.experiment_id} 实验第{self.current_phase}阶段开始", "info")
 
@@ -485,7 +493,7 @@ class MainWindow(QMainWindow):
         # 更新图表标题为预采集模式
         self.ecg_plot.setTitle('ECG信号 (预采集模式 )')
         self.emg_plot.setTitle('EMG信号 (预采集模式 )')
-        self.gsr_plot.setTitle('GSR信号 (预采集模式 )')
+        # GSR 已移除
         
         
 
@@ -621,7 +629,7 @@ class MainWindow(QMainWindow):
         self.log_message(f"应用已启动，开始预采集信号...", "info")
         self.log_message(f"采样频率: 1000Hz", "info")  # 启动时显示采样频率
         self.log_message(f"正在连接串口：{self.port_select.currentText()};波特率：500000", "info")
-        self.log_message(f"请设置实验编号与实验人数，然后点击初始化按钮", "warning")
+        self.log_message(f"请设置实验编号，然后点击初始化按钮", "warning")
 
     # 新增：初始化设置方法
     def initialize_settings(self):
@@ -634,12 +642,9 @@ class MainWindow(QMainWindow):
             self.initialized = False
             return
 
-        # 获取实验人数
-        subject_count = self.subject_select.currentIndex() + 1  # 0对应1人，1对应2人
-
-        # 保存到类属性
+        # 单人模式：固定为1人
         self.experiment_id = exp_id
-        self.subject_count = subject_count
+        self.subject_count = 1
         self.initialized = True
 
         # 禁用设置选项，防止运行时更改
@@ -651,7 +656,7 @@ class MainWindow(QMainWindow):
         self.update_curve_visibility()
 
         # 在状态栏显示信息
-        self.log_message(f"初始化成功 - 实验编号: {self.experiment_id}, 实验人数: {self.subject_count}人", "info")
+        self.log_message(f"初始化成功 - 实验编号: {self.experiment_id}", "info")
 
        # 新增：汇总并显示当前选择的通道
         selected_channels = []
@@ -670,14 +675,14 @@ class MainWindow(QMainWindow):
 
     # 新增：更新曲线可见性
     def update_curve_visibility(self):
-        if self.subject_count == 1:
-            # 1人模式：只显示第一组数据
-            self.ecg_curve1.setVisible(True and self.ecg_channel)
+        # 单人模式：只显示第一组曲线
+        self.ecg_curve1.setVisible(self.ecg_channel)
+        try:
             self.ecg_curve2.setVisible(False)
-            self.emg_curve1.setVisible(True and self.emg_channel)
+            self.emg_curve1.setVisible(self.emg_channel)
             self.emg_curve2.setVisible(False)
-            # self.gsr_curve1.setVisible(True and self.gsr_channel)
-            # self.gsr_curve2.setVisible(False)
+        except Exception:
+            pass
 
 
     def create_groupboxes(self):
@@ -816,7 +821,7 @@ class MainWindow(QMainWindow):
 
 
         # 显示实验编号开始信息
-        self.log_message(f"{self.experiment_id} 实验正式开始 (实验人数: {self.subject_count}人)", "info")
+        self.log_message(f"{self.experiment_id} 实验正式开始", "info")
 
     def handle_serial_data(self, emg, ecg):
         """处理串口接收的数据，根据状态决定存入预采集还是正式数据缓冲区"""
@@ -853,7 +858,7 @@ class MainWindow(QMainWindow):
             # 恢复图表标题为预采集模式
             self.ecg_plot.setTitle('ECG信号 (预采集模式)')
             self.emg_plot.setTitle('EMG信号 (预采集模式)')
-            self.gsr_plot.setTitle('GSR信号 (预采集模式)')
+            # GSR 已移除
 
             # 显示实验编号结束信息
             self.log_message(f"{self.experiment_id} 停止采集", "info")
@@ -862,26 +867,7 @@ class MainWindow(QMainWindow):
         """在状态栏显示异常包数量"""
         self.log_message(f"本次采集异常包数量: {count}", "warning")
 
-    def clear_pre_buffers(self):
-        """清除所有数据缓冲区"""
-        # 清除正式数据缓冲区
-        # self.ECG_1_data_.clear()
-        # self.EMG_1_data_.clear()
-
-
-        # 清除预采集数据缓冲区
-        self.pre_ECG_1_data_.clear()
-        self.pre_EMG_1_data_.clear()
-
-
-        # # 清除marker
-        # self.markers = []
-        # self.first_phase_markers = []
-        # self.second_phase_markers = []
-
-        # 重置绘图索引和实验阶段
-        self.draw_index = 49
-        self.current_phase = 1
+    # 预采集缓冲区清理方法在文件下方已定义，此处保留占位以避免重复定义
 
     def clear_all_data_and_markers(self):
         """清除所有数据缓冲区和marker缓存（在第一阶段保存后调用）"""
@@ -986,27 +972,14 @@ class MainWindow(QMainWindow):
             # === 第一步：根据 subject_count 和复选框状态，构建 (列名, buffer) 列表 ===
             channel_info = []  # 存储元组: (列名字符串, 数据buffer)
 
-            if self.subject_count == 1:
-                # 1人模式：每个信号最多1个通道
-                mapping = [
-                    (self.ecg_channel, "ECG_1", self.ECG_1_data_),
-                    (self.emg_channel, "EMG_1", self.EMG_1_data_),
-                    (self.gsr_channel, "GSR_1", self.GSR_1_data_),
-                ]
-                for is_selected, col_name, buffer in mapping:
-                    if is_selected:
-                        channel_info.append((col_name, buffer))
-            else:
-                # 2人模式：每个信号有2个通道
-                mapping = [
-                    (self.ecg_channel, ["ECG_1", "ECG_2"], [self.ECG_1_data_, self.ECG_2_data_]),
-                    (self.emg_channel, ["EMG_1", "EMG_2"], [self.EMG_1_data_, self.EMG_2_data_]),
-                    (self.gsr_channel, ["GSR_1", "GSR_2"], [self.GSR_1_data_, self.GSR_2_data_]),
-                ]
-                for is_selected, col_names, buffers in mapping:
-                    if is_selected:
-                        for name, buf in zip(col_names, buffers):
-                            channel_info.append((name, buf))
+            # 单人模式，仅保留 ECG 和 EMG 两个通道
+            mapping = [
+                (self.ecg_channel, "ECG_1", self.ECG_1_data_),
+                (self.emg_channel, "EMG_1", self.EMG_1_data_),
+            ]
+            for is_selected, col_name, buffer in mapping:
+                if is_selected:
+                    channel_info.append((col_name, buffer))
 
             # 检查是否有选中通道
             if not channel_info:
@@ -1100,6 +1073,107 @@ class MainWindow(QMainWindow):
         #     self.marker_server.stop()
         #     self.marker_server.wait()
         event.accept()
+
+    def _hr_update(self):
+        """心率滑动窗口更新回调（由 hr_timer 每 0.5s 调用）
+
+        使用 `self.ECG_1_data_.get_raw_data()` 获取最新数据，窗口长度为 `self.hr_window_s` 秒。
+        调用已集成的 neurokit2 静态方法进行 R 波检测与心率计算，然后更新 `self.Heart_rate` 和 UI 标签。
+        """
+        try:
+            ecg_all = self.ECG_1_data_.get_raw_data()
+            if ecg_all is None or ecg_all.size == 0:
+                self.Heart_rate = 0.0
+                self.heart_rate_qlabel.setText(f"心率:{self.Heart_rate:.1f} bpm")
+                return
+
+            window_samples = int(self.sampling_rate * float(self.hr_window_s))
+            if len(ecg_all) >= window_samples:
+                segment = ecg_all[-window_samples:]
+            else:
+                segment = ecg_all
+
+            bpm_mean, rpeaks, bpm_inst = self.compute_heart_rate_with_neurokit(segment, sampling_rate=self.sampling_rate)
+
+            # 更新内部状态与 UI
+            self.Heart_rate = float(bpm_mean)
+            self.heart_rate_qlabel.setText(f"心率:{self.Heart_rate:.1f} bpm")
+
+        except ImportError as ie:
+            # neurokit2 未安装或导入失败，记录并停止定时器以避免重复报错
+            self.log_message(str(ie), "error")
+            try:
+                self.hr_timer.stop()
+            except Exception:
+                pass
+            self.heart_rate_qlabel.setText("心率: N/A")
+        except Exception as e:
+            # 其它运行时错误，记录但不停止定时器
+            self.log_message(f"心率计算错误: {e}", "warning")
+            self.heart_rate_qlabel.setText("心率: 0.0 bpm")
+            self.Heart_rate = 0.0
+
+
+    @staticmethod
+    def compute_heart_rate_with_neurokit(ecg_signal, sampling_rate=1000):
+        """
+        使用 neurokit2 从原始 ECG 信号计算心率。
+
+        参数:
+        - ecg_signal: 1D 可迭代对象或 numpy 数组，原始 ECG 样本（任意数值类型）
+        - sampling_rate: 采样率（Hz），默认 1000
+
+        返回:
+        - bpm_mean: float，平均心率（bpm）。当 R 波数 < 2 时返回 0.0。
+        - rpeaks: 1D numpy 整数数组，R 波样本索引（以样点为单位）。
+        - bpm_inst: 1D numpy 浮点数组，瞬时心率（bpm），长度为 len(rpeaks)-1。
+
+        说明:
+        - 依赖 `neurokit2`。若未安装会抛出 ImportError，提示用户安装。
+        - 本函数只负责从已有信号计算心率，不对任何 GUI 或类属性作修改。
+        """
+        try:
+            import neurokit2 as nk
+        except Exception as e:
+            raise ImportError("neurokit2 未安装或导入失败。请运行 `pip install neurokit2`。原始错误: " + str(e))
+
+        if ecg_signal is None:
+            return 0.0, np.array([], dtype=int), np.array([], dtype=float)
+
+        ecg = np.asarray(ecg_signal, dtype=float)
+        if ecg.size < 10:
+            return 0.0, np.array([], dtype=int), np.array([], dtype=float)
+
+        try:
+            # nk.ecg_peaks 返回 (signals, info)，info 中通常包含 'ECG_R_Peaks'
+            signals, info = nk.ecg_peaks(ecg, sampling_rate=sampling_rate)
+
+            rpeaks = info.get('ECG_R_Peaks', None)
+
+            # neurokit2 有时返回二值向量或索引列表，统一转换为索引数组
+            if rpeaks is None:
+                rpeaks_idx = np.array([], dtype=int)
+            else:
+                rpeaks_arr = np.asarray(rpeaks)
+                # 如果是与信号等长的二值向量
+                if rpeaks_arr.ndim == 1 and rpeaks_arr.size == ecg.size and set(np.unique(rpeaks_arr)).issubset({0, 1}):
+                    rpeaks_idx = np.where(rpeaks_arr)[0].astype(int)
+                else:
+                    # 尝试把它当成索引列表
+                    rpeaks_idx = rpeaks_arr.astype(int)
+
+            if rpeaks_idx.size < 2:
+                return 0.0, rpeaks_idx, np.array([], dtype=float)
+
+            # 计算 RR 间期（秒）和瞬时心率（bpm）
+            rr_intervals = np.diff(rpeaks_idx) / float(sampling_rate)
+            bpm_inst = 60.0 / rr_intervals
+            bpm_mean = float(np.mean(bpm_inst)) if bpm_inst.size > 0 else 0.0
+
+            return bpm_mean, rpeaks_idx, bpm_inst
+
+        except Exception as e:
+            raise RuntimeError("neurokit2 在处理 ECG 信号时出错: " + str(e))
 
 
 if __name__ == '__main__':
