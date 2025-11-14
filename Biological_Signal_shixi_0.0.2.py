@@ -252,15 +252,49 @@ class DataBuffer:
         with self.lock:
             self.buffer.extend(data)
 
-    def get_raw_data(self, low_index=None, high_index=None):
+    def get_length(self):
+        """返回当前缓冲区长度（不做大拷贝）"""
         with self.lock:
-            arr = np.array(self.buffer, dtype=np.uint16)
+            return len(self.buffer)
+
+    def get_last_n(self, n):
+        """高效获取最后 n 个样本（直接对 list 切片再转 numpy，避免拷贝全部）"""
+        with self.lock:
+            if n <= 0:
+                return np.array([], dtype=np.uint16)
+            buf_len = len(self.buffer)
+            if buf_len == 0:
+                return np.array([], dtype=np.uint16)
+            if n >= buf_len:
+                return np.array(self.buffer, dtype=np.uint16)
+            # 只把尾部切片转为 numpy，避免全量拷贝
+            tail = self.buffer[-n:]
+            return np.array(tail, dtype=np.uint16)
+
+    def get_raw_data(self, low_index=None, high_index=None):
+        """兼容接口：当指定区间时只转区间部分为 numpy，避免先把整个 list 转为 numpy 再切片"""
+        with self.lock:
+            buf_len = len(self.buffer)
+            # 无参：返回全部（会拷贝全部）
             if low_index is None and high_index is None:
-                return arr
-            elif high_index is not None and low_index is not None:
-                if high_index > low_index and high_index <= len(arr):
-                    return arr[low_index:high_index]
-            return None
+                return np.array(self.buffer, dtype=np.uint16)
+            # 规范默认值
+            if low_index is None:
+                low_index = 0
+            if high_index is None:
+                high_index = buf_len
+            # 验证索引合法性
+            if not (0 <= low_index <= high_index <= buf_len):
+                return None
+            slice_len = high_index - low_index
+            if slice_len == 0:
+                return np.array([], dtype=np.uint16)
+            # 如果请求的是尾部数据，使用切片后转 numpy（高效）
+            if low_index >= 0:
+                part = self.buffer[low_index:high_index]
+                return np.array(part, dtype=np.uint16)
+            # 兜底（不太可能到这里）
+            return np.array(self.buffer[low_index:high_index], dtype=np.uint16)
 
     def clear(self):
         with self.lock:
@@ -677,9 +711,9 @@ class MainWindow(QMainWindow):
     def update_curve_visibility(self):
         # 单人模式：只显示第一组曲线
         self.ecg_curve1.setVisible(self.ecg_channel)
+        self.emg_curve1.setVisible(self.emg_channel)
         try:
             self.ecg_curve2.setVisible(False)
-            self.emg_curve1.setVisible(self.emg_channel)
             self.emg_curve2.setVisible(False)
         except Exception:
             pass
@@ -705,8 +739,8 @@ class MainWindow(QMainWindow):
         self.verticalLayout.addWidget(self.ecgBox)
 
         self.ecg_plot.addLegend()
-        self.ecg_curve1 = self.ecg_plot.plot(pen=pg.mkPen(color='r', width=2), name='ECG_1')
-        self.ecg_curve2 = self.ecg_plot.plot(pen=pg.mkPen(color='b', width=2), name='ECG_2')
+        # 只保留一条 ECG 曲线，名称为 "ECG"
+        self.ecg_curve1 = self.ecg_plot.plot(pen=pg.mkPen(color='r', width=2), name='ECG')
 
         # EMG GroupBox
         self.emgBox = QGroupBox("EMG信号", self.widget)
@@ -724,8 +758,8 @@ class MainWindow(QMainWindow):
         self.verticalLayout.addWidget(self.emgBox)
 
         self.emg_plot.addLegend()
-        self.emg_curve1 = self.emg_plot.plot(pen=pg.mkPen(color='r', width=2), name='EMG_1')
-        self.emg_curve2 = self.emg_plot.plot(pen=pg.mkPen(color='b', width=2), name='EMG_2')
+        # 只保留一条 EMG 曲线，名称为 "EMG"
+        self.emg_curve1 = self.emg_plot.plot(pen=pg.mkPen(color='r', width=2), name='EMG')
 
         # # GSR GroupBox
         # self.gsrBox = QGroupBox("GSR信号", self.widget)
@@ -1082,6 +1116,7 @@ class MainWindow(QMainWindow):
         """
         try:
             ecg_all = self.ECG_1_data_.get_raw_data()
+            # 
             if ecg_all is None or ecg_all.size == 0:
                 self.Heart_rate = 0.0
                 self.heart_rate_qlabel.setText(f"心率:{self.Heart_rate:.1f} bpm")
