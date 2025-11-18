@@ -662,7 +662,7 @@ class MainWindow(QMainWindow):
 
         self.log_message(f"应用已启动，开始预采集信号...", "info")
         self.log_message(f"采样频率: 1000Hz", "info")  # 启动时显示采样频率
-        self.log_message(f"正在连接串口：{self.port_select.currentText()};波特率：500000", "info")
+        self.log_message(f"正在连接串口：{self.port_select.currentText()};波特率：115200", "info")
         self.log_message(f"请设置实验编号，然后点击初始化按钮", "warning")
 
     # 新增：初始化设置方法
