@@ -24,7 +24,7 @@ class SerialThread(QThread):
     data_received = pyqtSignal(np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, port, baudrate=500000, buffer_threshold=60):
+    def __init__(self, port, baudrate=115200, buffer_threshold=60):
         super().__init__()
         self.port = port
         self.baudrate = baudrate
@@ -535,7 +535,7 @@ class MainWindow(QMainWindow):
         """初始化串口连接，启动后立即开始预采集"""
         port = self.port_select.currentText()
         # 使用优化后的较小阈值
-        self.serial_thread = SerialThread(port, baudrate=500000, buffer_threshold=60)
+        self.serial_thread = SerialThread(port, baudrate=115200, buffer_threshold=60)
         self.serial_thread.data_received.connect(self.handle_serial_data)
         self.serial_thread.error_occurred.connect(self.handle_serial_error)
         self.serial_thread.start()
@@ -819,7 +819,7 @@ class MainWindow(QMainWindow):
         port = self.port_select.currentText()
         self.log_message(f"切换到串口：{port}，继续预采集", "info")
         # 优化：使用相同的优化设置
-        self.serial_thread = SerialThread(port, baudrate=500000, buffer_threshold=140)
+        self.serial_thread = SerialThread(port, baudrate=115200, buffer_threshold=140)
         self.serial_thread.data_received.connect(self.handle_serial_data)
         self.serial_thread.error_occurred.connect(self.handle_serial_error)
         self.serial_thread.start()
@@ -937,43 +937,57 @@ class MainWindow(QMainWindow):
         self.log_message(f"{self.experiment_id} 实验完全结束", "info")
 
     def update_plot(self):
-        # 根据当前状态选择要显示的数据缓冲区
+        # 根据当前状态选择要显示的数据缓冲区（只取最新数据，避免全量拷贝）
         if self.is_recording:
-            ecg1_data = self.ECG_1_data_
-            emg1_data = self.EMG_1_data_
-
+            ecg_buf = self.ECG_1_data_
+            emg_buf = self.EMG_1_data_
         else:
-            ecg1_data = self.pre_ECG_1_data_
-            emg1_data = self.pre_EMG_1_data_
+            ecg_buf = self.pre_ECG_1_data_
+            emg_buf = self.pre_EMG_1_data_
 
+        # 要显示的点数（最多 display_points）
+        n_display = int(self.display_points)
+        # 获取各通道当前长度（无拷贝）
+        len_ecg = ecg_buf.get_length()
+        len_emg = emg_buf.get_length()
 
-        # 获取当前数据长度
-        data_len = len(ecg1_data.get_raw_data())
+        # 如果都没有数据则直接返回
+        if not (len_ecg or len_emg):
+            return
 
-        if data_len < self.display_points:
-            return  # 数据太少，不进行绘图
-
-        # 计算绘图起止索引
-        if self.draw_index >= data_len:
-            self.draw_index = data_len  # 防止越界
-
-        if self.draw_index > self.display_points:
-            start = self.draw_index - self.display_points
+        # 优先使用可选通道的最大可用点数（确保时间轴长度一致）
+        if self.ecg_channel and self.emg_channel:
+            n = min(n_display, len_ecg, len_emg)
+        elif self.ecg_channel:
+            n = min(n_display, len_ecg)
+        elif self.emg_channel:
+            n = min(n_display, len_emg)
         else:
-            start = 0
+            return  # 没有选中通道
 
-        # 获取时间轴
-        time_axis = np.linspace(0, (self.draw_index - start) / self.display_rate, self.draw_index - start)
+        if n <= 0:
+            return
 
-        # 更新第一组曲线（始终显示）
-        self.ecg_curve1.setData(time_axis, ecg1_data.get_raw_data()[start:self.draw_index])
-        self.emg_curve1.setData(time_axis, emg1_data.get_raw_data()[start:self.draw_index])
+        # 高效获取尾部数据（只拷贝需要的 n 个样本）
+        ecg_tail = ecg_buf.get_last_n(n) if self.ecg_channel else np.zeros(n, dtype=np.uint16)
+        emg_tail = emg_buf.get_last_n(n) if self.emg_channel else np.zeros(n, dtype=np.uint16)
 
+        # 使用真实采样率生成时间轴（最近的数据在最后）
+        time_axis = np.linspace(- (n - 1) / float(self.sampling_rate), 0, n)
 
+        # 更新曲线（只调用一次 setData，避免重复读取）
+        try:
+            if self.ecg_channel:
+                self.ecg_curve1.setData(time_axis, ecg_tail)
+            else:
+                self.ecg_curve1.setData([], [])
 
-
-        # 递增索引
-        self.draw_index += self.update_points
+            if self.emg_channel:
+                self.emg_curve1.setData(time_axis, emg_tail)
+            else:
+                self.emg_curve1.setData([], [])
+        except Exception as e:
+            self.log_message(f"绘图更新错误: {e}", "warning")
 
     def save_data(self):
         """保存原始数据到CSV文件（只保存正式采集的数据）- 保持原有功能不变"""
@@ -1163,9 +1177,7 @@ class MainWindow(QMainWindow):
         - rpeaks: 1D numpy 整数数组，R 波样本索引（以样点为单位）。
         - bpm_inst: 1D numpy 浮点数组，瞬时心率（bpm），长度为 len(rpeaks)-1。
 
-        说明:
-        - 依赖 `neurokit2`。若未安装会抛出 ImportError，提示用户安装。
-        - 本函数只负责从已有信号计算心率，不对任何 GUI 或类属性作修改。
+
         """
         try:
             import neurokit2 as nk
